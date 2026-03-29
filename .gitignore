@@ -1,16 +1,44 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+# Built application files
+*.apk
+*.ap_
+*.aab
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated build files
+bin/
+gen/
+out/
+build/
 app/build/
+
+# Gradle files
+.gradle/
+gradlew.bat
+
+# User-specific configuration and local environment properties
+local.properties
+
+# Android Studio IDE files
+.idea/
+*.iml
+*.iws
+
+# Keystore files (WARNING: Never commit your actual signing keys)
+*.jks
+*.keystore
+
+# Mac specific
+.DS_Store
+
+# NDK & C++ build
+.cxx/
+.externalNativeBuild/
+
+# Large Model files (Skip committing 50MB Vosk models to Git without LFS)
+app/src/main/assets/model-en-us/
+app/src/main/assets/hey_jarvis.onnx
