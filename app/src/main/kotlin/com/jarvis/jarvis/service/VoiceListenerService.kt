@@ -29,7 +29,11 @@ class VoiceListenerService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, buildNotification(), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification())
+        }
         
         audioFeedback = AudioFeedback(this)
         
@@ -80,6 +84,7 @@ class VoiceListenerService : LifecycleService() {
         wakeWordEngine.pause()
         
         withContext(Dispatchers.Main) {
+            audioFeedback.speak("Yes")
             Toast.makeText(applicationContext, "Listening...", Toast.LENGTH_SHORT).show()
         }
         

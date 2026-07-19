@@ -3,6 +3,16 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
+val localProperties = Properties()
+val localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localProperties.load(FileInputStream(localPropertiesFile))
+}
+val porcupineKey = localProperties.getProperty("PORCUPINE_KEY") ?: "\"\""
+
 android {
     namespace = "com.jarvis.jarvis"
     compileSdk = 34
@@ -13,6 +23,8 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+        
+        buildConfigField("String", "PORCUPINE_KEY", porcupineKey)
     }
 
     buildFeatures {
@@ -43,8 +55,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
 
-    // ONNX Runtime for openWakeWord
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+    // Picovoice Porcupine Wake Word
+    implementation("ai.picovoice:porcupine-android:3.0.1")
 
     // Offline Speech-to-Text
     implementation("com.alphacephei:vosk-android:0.3.47")

@@ -8,11 +8,10 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
 import androidx.core.content.ContextCompat
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
+import ai.picovoice.porcupine.Porcupine
+import ai.picovoice.porcupine.PorcupineException
+import com.jarvis.jarvis.BuildConfig
 import kotlinx.coroutines.*
-import java.nio.FloatBuffer
 
 class WakeWordEngine(private val context: Context) {
 
@@ -21,35 +20,33 @@ class WakeWordEngine(private val context: Context) {
     private var isListening = false
     private val scope = CoroutineScope(Dispatchers.IO)
 
-    private var ortEnvironment: OrtEnvironment? = null
-    private var melSession: OrtSession? = null
-    private var wwSession: OrtSession? = null
-
-    // For keeping the past 16 frames of 96-dim melspectrograms
-    private val featureRingBuffer = Array(16) { FloatArray(96) }
-    private var framesCount = 0
+    private var porcupine: Porcupine? = null
 
     fun initialize(onDetected: () -> Unit) {
         this.onWakeWordDetected = onDetected
         try {
-            ortEnvironment = OrtEnvironment.getEnvironment()
-            
-            // NOTE: Ensure melspectrogram.onnx and hey_jarvis.onnx are placed in app/src/main/assets/
-            val melBytes = context.assets.open("melspectrogram.onnx").readBytes()
-            val wwBytes = context.assets.open("hey_jarvis.onnx").readBytes()
-            
-            melSession = ortEnvironment?.createSession(melBytes)
-            wwSession = ortEnvironment?.createSession(wwBytes)
+            val accessKey = BuildConfig.PORCUPINE_KEY
+            if (accessKey.isBlank() || accessKey == "\"\"") {
+                Log.e("WakeWordEngine", "PORCUPINE_KEY is missing from local.properties! Register on console.picovoice.ai to get a free key.")
+                return
+            }
 
-            Log.i("WakeWordEngine", "openWakeWord initialized via ONNX Runtime")
-        } catch (e: Exception) {
-            Log.e("WakeWordEngine", "Failed to load ONNX models. Did you place them in assets/ directory?", e)
+            porcupine = Porcupine.Builder()
+                .setAccessKey(accessKey)
+                // Using the native built-in wake word "Porcupine". You can switch to JARVIS if you train it on the console!
+                .setKeyword(Porcupine.BuiltInKeyword.PORCUPINE)
+                .setSensitivity(0.7f)
+                .build(context)
+
+            Log.i("WakeWordEngine", "Picovoice Porcupine initialized flawlessly")
+        } catch (e: PorcupineException) {
+            Log.e("WakeWordEngine", "Failed to load Porcupine ML model", e)
         }
     }
 
     fun start() {
-        if (melSession == null || wwSession == null) {
-            Log.e("WakeWordEngine", "ONNX sessions not initialized")
+        if (porcupine == null) {
+            Log.w("WakeWordEngine", "Porcupine not initialized. You MUST add PORCUPINE_KEY=\"your_key_here\" to local.properties")
             return
         }
 
@@ -58,79 +55,43 @@ class WakeWordEngine(private val context: Context) {
             return
         }
 
-        val sampleRate = 16000
-        val bufferSize = AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        ) * 2
+        try {
+            val sampleRate = porcupine?.sampleRate ?: 16000
+            val bufferSize = Math.max(
+                AudioRecord.getMinBufferSize(
+                    sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT
+                ) * 2,
+                (porcupine?.frameLength ?: 512) * 2
+            )
 
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
 
-        audioRecord?.startRecording()
-        resume()
+            audioRecord?.startRecording()
+            resume()
+        } catch (e: Exception) {
+            Log.e("WakeWordEngine", "Failed to start AudioRecord pipeline", e)
+        }
     }
 
     private fun processAudioStep(pcmBuffer: ShortArray) {
-        val env = ortEnvironment ?: return
-        val melSess = melSession ?: return
-        val wwSess = wwSession ?: return
-
         try {
-            // 1. Convert PCM to Float (-1.0 to 1.0)
-            val floatAudio = FloatArray(pcmBuffer.size) { i -> pcmBuffer[i] / 32768f }
-            val audioBuffer = FloatBuffer.wrap(floatAudio)
-            
-            val audioTensor = OnnxTensor.createTensor(env, audioBuffer, longArrayOf(1, floatAudio.size.toLong()))
-            val melResult = melSess.run(mapOf("audio" to audioTensor))
-            
-            // Mel features shape typically [1, 1, 96] or similar depending on the exact preprocessor ONNX
-            val melOutput = melResult.get(0).value as Array<Array<FloatArray>>
-            val features = melOutput[0][0] // The 96-dim vector for this 80ms chunk
-            
-            melResult.close()
-            audioTensor.close()
-
-            // 2. Add to ring buffer
-            featureRingBuffer[framesCount % 16] = features
-            framesCount++
-
-            // Only run WW model when we have at least 16 frames
-            if (framesCount >= 16) {
-                // Flatten the ring buffer in chronological order
-                val flattenedFeatures = FloatArray(16 * 96)
-                for (i in 0 until 16) {
-                    val frameIndex = (framesCount - 16 + i) % 16
-                    System.arraycopy(featureRingBuffer[frameIndex], 0, flattenedFeatures, i * 96, 96)
-                }
-
-                val featureBuffer = FloatBuffer.wrap(flattenedFeatures)
-                val wwTensor = OnnxTensor.createTensor(env, featureBuffer, longArrayOf(1, 16, 96))
-                
-                // Typical input name is 'input' but could be different in specific openWakeWord models
-                val wwResult = wwSess.run(mapOf("inputs" to wwTensor))
-                val wwOutput = wwResult.get(0).value as Array<FloatArray>
-                val score = wwOutput[0][0]
-                
-                wwResult.close()
-                wwTensor.close()
-
-                if (score > 0.5f) { // Arbitrary threshold, tune as needed
-                    Log.i("WakeWordEngine", "Wake word detected! Score: $score")
-                    framesCount = 0 // Debounce by resetting buffer
-                    scope.launch(Dispatchers.Main) {
-                        onWakeWordDetected?.invoke()
-                    }
+            val keywordIndex = porcupine?.process(pcmBuffer) ?: -1
+            if (keywordIndex == 0) {
+                Log.i("WakeWordEngine", "Wake word detected!")
+                scope.launch(Dispatchers.Main) {
+                    onWakeWordDetected?.invoke()
                 }
             }
         } catch (e: Exception) {
-            Log.e("WakeWordEngine", "Error processing audio step", e)
+            Log.e("WakeWordEngine", "Error validating audio arrays", e)
         }
     }
 
@@ -139,6 +100,7 @@ class WakeWordEngine(private val context: Context) {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        porcupine?.delete()
     }
 
     fun getAudioRecord(): AudioRecord? = audioRecord
@@ -151,7 +113,7 @@ class WakeWordEngine(private val context: Context) {
         if (isListening) return
         isListening = true
         scope.launch {
-            val samplesPerStep = 1280
+            val samplesPerStep = porcupine?.frameLength ?: 512
             val pcmBuffer = ShortArray(samplesPerStep)
             while (isListening && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
                 val bytesRead = audioRecord?.read(pcmBuffer, 0, samplesPerStep) ?: 0
